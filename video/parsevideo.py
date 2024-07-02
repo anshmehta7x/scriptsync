@@ -1,4 +1,3 @@
-import os
 import cv2
 import numpy as np
 import easyocr
@@ -71,24 +70,26 @@ def ocr_single_frame(frame, reader):
         result.append({'text': detection[1], 'bounding_box': detection[0]})
     return result
 
-def create_translation_cache(texts):
+def create_translation_cache(texts, src='en', dest='fr'):
     """
     Create translation cache for a list of texts.
 
     Args:
         texts (list): List of texts to translate.
+        src (str): Source language code (default is 'en').
+        dest (str): Destination language code (default is 'fr').
     """
     global cache  # Use global cache variable
-    cache = translation.create_translate_cache(texts)
+    cache = translation.create_translate_cache(texts, src=src, dest=dest)
 
-def check_frame_difference(frame1, frame2, threshold=1):
+def check_frame_difference(frame1, frame2, threshold=10):
     """
     Check if there is a significant difference between two frames.
 
     Args:
         frame1 (np.array): First frame.
         frame2 (np.array): Second frame.
-        threshold (float): Threshold for mean difference (default is 1).
+        threshold (float): Threshold for mean difference (default is 10).
 
     Returns:
         bool: True if frames are different, False otherwise.
@@ -103,13 +104,15 @@ def check_frame_difference(frame1, frame2, threshold=1):
     
     return mean_diff > threshold
 
-def apply_translation(frame, ocr_result):
+def apply_translation(frame, ocr_result, src='en', dest='fr'):
     """
     Apply text translation to a frame.
 
     Args:
         frame (np.array): Input frame in numpy array format.
         ocr_result (list): List of OCR results with text and bounding box.
+        src (str): Source language code (default is 'en').
+        dest (str): Destination language code (default is 'fr').
 
     Returns:
         np.array: Translated frame with text overlays.
@@ -142,7 +145,7 @@ def apply_translation(frame, ocr_result):
             translated_text = cache[text]
         else:
             logger.info("Cache miss for text: %s", text)
-            translated_text = translation.translate_text(text)
+            translated_text = translation.translate_text(text, dest=dest, src=src)
             cache[text] = translated_text  # Update global cache
         
         font = ImageFont.truetype(font_path, font_size)
@@ -153,7 +156,7 @@ def apply_translation(frame, ocr_result):
 
     return translated_frame
 
-def ocr_video(frames, langs=['en'], GPU=True, cache_creation=False):
+def ocr_video(frames, langs=['en'], GPU=True, cache_creation=False, src='en', dest='fr'):
     """
     Perform OCR on a video and optionally apply text translation.
 
@@ -162,6 +165,8 @@ def ocr_video(frames, langs=['en'], GPU=True, cache_creation=False):
         langs (list): List of languages for OCR (default is ['en'] for English).
         GPU (bool): Whether to use GPU for OCR (default is True).
         cache_creation (bool): Whether to create translation cache (default is False).
+        src (str): Source language code for translation (default is 'en').
+        dest (str): Destination language code for translation (default is 'fr').
 
     Returns:
         list: List of translated frames if cache_creation is False.
@@ -179,7 +184,7 @@ def ocr_video(frames, langs=['en'], GPU=True, cache_creation=False):
                 ocr_result = ocr_single_frame(frame, reader)
                 ocr_results.append(ocr_result)
                 if not cache_creation:
-                    translated_frame = apply_translation(frame, ocr_result)
+                    translated_frame = apply_translation(frame, ocr_result, src=src, dest=dest)
                     translated_frames.append(translated_frame)
                     prev_translated_frame = translated_frame
                 prev_frame = frame
@@ -189,7 +194,7 @@ def ocr_video(frames, langs=['en'], GPU=True, cache_creation=False):
             pbar.update(1)
 
     if cache_creation:
-        create_translation_cache(ocr_results)
+        create_translation_cache(ocr_results, src=src, dest=dest)
     else:
         return translated_frames
 
@@ -209,18 +214,22 @@ def save_video(frames, output_path):
         out.write(frame)
     out.release()
 
+# Driver code
 if __name__ == "__main__":
-    video_path = "heavy_eng.mp4"
+    video_path = "french2_fr.mp4"
+    src_lang = 'fr'  # Source language code
+    dest_lang = 'en'  # Destination language code
+    
     logger.info("Getting frames from video...")
     frames = get_frames(video_path)  # Retrieve frames only
     logger.info("Total frames extracted: %d", len(frames))
     
     logger.info("Performing OCR and caching...")
-    ocr_video(frames, cache_creation=True)
+    ocr_video(frames, cache_creation=True, src=src_lang, dest=dest_lang)
     logger.info("OCR and caching completed")
     
     logger.info("Performing translation...")
-    translated_frames = ocr_video(frames, cache_creation=False)
+    translated_frames = ocr_video(frames, cache_creation=False, src=src_lang, dest=dest_lang)
     logger.info("Translation done")
     
     logger.info("Saving video...")

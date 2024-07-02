@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 translation_cache = {}
 
-def translate_text(text, dest='fr', max_retries=1):
+def translate_text(text, dest='fr',src='en', max_retries=1):
     """
     Translate text to the specified destination language with caching and error handling.
 
@@ -28,7 +28,7 @@ def translate_text(text, dest='fr', max_retries=1):
 
     for attempt in range(max_retries):
         try:
-            translation = translator.translate(text, dest=dest).text
+            translation = translator.translate(text,src=src, dest=dest).text
             translation_cache[text] = translation
             return translation
         except Exception as e:
@@ -38,7 +38,7 @@ def translate_text(text, dest='fr', max_retries=1):
                 logger.error(f"Failed to translate text after {max_retries} attempts: {text}. Error: {str(e)}")
                 return text  # Return original text if translation fails
 
-def create_translate_cache(ocr_results, dest='fr'):
+def create_translate_cache(ocr_results,src='en', dest='fr'):
     """
     Create translation cache for unique texts extracted from OCR results.
 
@@ -60,7 +60,7 @@ def create_translate_cache(ocr_results, dest='fr'):
 
     with tqdm(total=len(texts), desc="Creating Translation Cache") as pbar:
         for text in texts:
-            translation = translate_text(text, dest=dest)
+            translation = translate_text(text,src=src ,dest=dest)
             translation_cache[text] = translation
             pbar.update(1)
 
