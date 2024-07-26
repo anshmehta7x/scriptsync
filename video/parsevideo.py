@@ -17,26 +17,40 @@ fps = 0
 class NoFrameError(Exception):
     pass
 
-def get_frames(video_path):
+def get_total_frames_and_fps(video_path):
     """
-    Extract frames from a video file.
+    Get the total number of frames and the FPS of the video.
 
     Args:
         video_path (str): Path to the video file.
 
     Returns:
-        np.array: Array of video frames.
+        int, int: Total frames and FPS of the video.
     """
-    global fps  # Declare fps as global
     capture = cv2.VideoCapture(video_path)
+    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = int(capture.get(cv2.CAP_PROP_FPS))
+    capture.release()
+    return total_frames, fps
+
+def get_frames(video_path, start_frame, end_frame):
+    """
+    Extract a range of frames from a video file.
+
+    Args:
+        video_path (str): Path to the video file.
+        start_frame (int): Starting frame index.
+        end_frame (int): Ending frame index.
+
+    Returns:
+        list: List of video frames.
+    """
+    capture = cv2.VideoCapture(video_path)
+    capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     frames = []
 
-    # Get total frame count
-    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = int(capture.get(cv2.CAP_PROP_FPS))  # Initialize fps here
-
-    with tqdm(total=total_frames, desc="Reading Frames") as pbar:
-        while True:
+    with tqdm(total=end_frame - start_frame, desc="Reading Frames") as pbar:
+        for _ in range(start_frame, end_frame):
             ret, frame = capture.read()
             if ret:
                 frames.append(frame)
@@ -44,14 +58,13 @@ def get_frames(video_path):
             else:
                 break
 
-    if not frames:
-        raise NoFrameError('No frame found in video')
-
     capture.release()
     cv2.destroyAllWindows()
 
-    frames_array = np.array(frames)
-    return frames_array
+    if not frames:
+        raise NoFrameError('No frame found in video')
+
+    return frames
 
 def ocr_single_frame(frame, reader):
     """
@@ -156,12 +169,14 @@ def apply_translation(frame, ocr_result, src='en', dest='fr'):
 
     return translated_frame
 
-def ocr_video(frames, langs=['en'], GPU=True, cache_creation=False, src='en', dest='fr'):
+def ocr_video_chunk(video_path, start_frame, end_frame, langs=['en'], GPU=True, cache_creation=False, src='en', dest='fr'):
     """
-    Perform OCR on a video and optionally apply text translation.
+    Perform OCR on a chunk of video frames and optionally apply text translation.
 
     Args:
-        frames (np.array): Array of video frames.
+        video_path (str): Path to the video file.
+        start_frame (int): Starting frame index.
+        end_frame (int): Ending frame index.
         langs (list): List of languages for OCR (default is ['en'] for English).
         GPU (bool): Whether to use GPU for OCR (default is True).
         cache_creation (bool): Whether to create translation cache (default is False).
@@ -173,6 +188,7 @@ def ocr_video(frames, langs=['en'], GPU=True, cache_creation=False, src='en', de
     """
     global cache  # Use global cache variable
     reader = easyocr.Reader(langs, gpu=GPU)
+    frames = get_frames(video_path, start_frame, end_frame)
     ocr_results = []
     translated_frames = []
     prev_frame = None
@@ -218,18 +234,22 @@ def save_video(frames, output_path):
 if __name__ == "__main__":
     video_path = "french2_fr.mp4"
     src_lang = 'fr'  # Source language code
-    dest_lang = 'en'  # Destination language code
+    dest_lang = 'es'  # Destination language code
     
-    logger.info("Getting frames from video...")
-    frames = get_frames(video_path)  # Retrieve frames only
-    logger.info("Total frames extracted: %d", len(frames))
+    total_frames, fps = get_total_frames_and_fps(video_path)
+    chunk_size = 1000  # Define a chunk size to process
     
     logger.info("Performing OCR and caching...")
-    ocr_video(frames, cache_creation=True, src=src_lang, dest=dest_lang)
+    for start_frame in range(0, total_frames, chunk_size):
+        end_frame = min(start_frame + chunk_size, total_frames)
+        ocr_video_chunk(video_path, start_frame, end_frame, cache_creation=True, src=src_lang, dest=dest_lang)
     logger.info("OCR and caching completed")
     
     logger.info("Performing translation...")
-    translated_frames = ocr_video(frames, cache_creation=False, src=src_lang, dest=dest_lang)
+    translated_frames = []
+    for start_frame in range(0, total_frames, chunk_size):
+        end_frame = min(start_frame + chunk_size, total_frames)
+        translated_frames.extend(ocr_video_chunk(video_path, start_frame, end_frame, cache_creation=False, src=src_lang, dest=dest_lang))
     logger.info("Translation done")
     
     logger.info("Saving video...")
