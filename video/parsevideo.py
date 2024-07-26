@@ -5,6 +5,8 @@ from tqdm import tqdm
 from PIL import Image, ImageDraw, ImageFont
 import translation
 import logging
+import multiprocessing
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -213,6 +215,11 @@ def ocr_video_chunk(video_path, start_frame, end_frame, langs=['en'], GPU=True, 
         create_translation_cache(ocr_results, src=src, dest=dest)
     else:
         return translated_frames
+    
+def process_chunk(args):
+    video_path, start_frame, end_frame, cache_creation, src_lang, dest_lang = args
+    return ocr_video_chunk(video_path, start_frame, end_frame, cache_creation=cache_creation, src=src_lang, dest=dest_lang)
+
 
 def save_video(frames, output_path):
     """
@@ -239,19 +246,26 @@ if __name__ == "__main__":
     total_frames, fps = get_total_frames_and_fps(video_path)
     chunk_size = 1000  # Define a chunk size to process
     
+    # Create a pool of worker processes
+    pool = multiprocessing.Pool(processes=multiprocessing.cpu_count())
+    
     logger.info("Performing OCR and caching...")
-    for start_frame in range(0, total_frames, chunk_size):
-        end_frame = min(start_frame + chunk_size, total_frames)
-        ocr_video_chunk(video_path, start_frame, end_frame, cache_creation=True, src=src_lang, dest=dest_lang)
+    chunks = [(video_path, start, min(start + chunk_size, total_frames), True, src_lang, dest_lang) 
+              for start in range(0, total_frames, chunk_size)]
+    pool.map(process_chunk, chunks)
     logger.info("OCR and caching completed")
     
     logger.info("Performing translation...")
-    translated_frames = []
-    for start_frame in range(0, total_frames, chunk_size):
-        end_frame = min(start_frame + chunk_size, total_frames)
-        translated_frames.extend(ocr_video_chunk(video_path, start_frame, end_frame, cache_creation=False, src=src_lang, dest=dest_lang))
+    chunks = [(video_path, start, min(start + chunk_size, total_frames), False, src_lang, dest_lang) 
+              for start in range(0, total_frames, chunk_size)]
+    translated_frames = pool.map(process_chunk, chunks)
+    translated_frames = [frame for chunk in translated_frames for frame in chunk]  # Flatten the list
     logger.info("Translation done")
     
     logger.info("Saving video...")
     save_video(translated_frames, "output.mp4")
     logger.info("Video saved")
+    
+    # Close the pool of worker processes
+    pool.close()
+    pool.join()
