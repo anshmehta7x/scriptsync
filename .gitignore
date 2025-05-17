@@ -3,3 +3,5 @@ video/__pycache__/translation.cpython-310.pyc
 *.mp4
 video/temp_frames
 video/__pycache__
+venv
+test_*
