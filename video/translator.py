@@ -14,12 +14,14 @@ class TranslationCache:
     def set_source(self, source):
         if source in self.supported_sources:
             self.source = source
+            self.translator = GoogleTranslator(source=source, target=self.dest)
         else:
             raise ValueError(f"Unsupported source language: {source}")
 
     def set_dest(self, dest):
         if dest in self.supported_dest:
             self.dest = dest
+            self.translator = GoogleTranslator(source=self.source, target=dest)
         else:
             raise ValueError(f"Unsupported destination language: {dest}")
 
@@ -36,5 +38,6 @@ class TranslationCache:
             return match
 
         translation = self.translator.translate(text, source=self.source, target=self.dest)
+        print(f"Translating '{text}' from {self.source} to {self.dest}: {translation}")
         self.cache[text] = translation
         return translation
