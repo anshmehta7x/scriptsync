@@ -105,11 +105,6 @@ class FrameProcessor:
         frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(frame_pil)
         
-        try:
-            font = ImageFont.truetype(self.font_path, 24)
-        except:
-            font = ImageFont.load_default()
-        
         for result in ocr_frame.get_results():
             original_text = result.text
             if original_text in translations:
@@ -127,18 +122,117 @@ class FrameProcessor:
                 max_x = min(frame.shape[1], max_x)
                 max_y = min(frame.shape[0], max_y)
                 
+                # Calculate box dimensions
+                box_width = max_x - min_x
+                box_height = max_y - min_y
+                
+                # Skip if box is too small
+                if box_width <= 0 or box_height <= 0:
+                    continue
+                
+                # Calculate appropriate font size to fill the box
+                font_size = self._calculate_font_size(translated_text, box_width, box_height)
+                
+                try:
+                    font = ImageFont.truetype(self.font_path, font_size)
+                except:
+                    font = ImageFont.load_default()
+                
                 # Calculate average color only if we have a valid region
                 if max_x > min_x and max_y > min_y:
                     avg_color = np.mean(frame[min_y:max_y, min_x:max_x], axis=(0, 1)).astype(int)
                 else:
                     avg_color = np.array([128, 128, 128])  # Default gray color
-                bg_color = tuple(avg_color.tolist()) + (180,)
-                text_color = (255, 255, 255)
                 
-                draw.rectangle([min_x-5, min_y-5, max_x+5, max_y+5], fill=bg_color)
-                draw.text((min_x, min_y), translated_text, font=font, fill=text_color)
+                # Create semi-transparent background
+                bg_color = tuple(avg_color.tolist()) + (200,)  # More opaque background
+                
+                # Choose text color based on background brightness
+                brightness = np.mean(avg_color)
+                text_color = (0, 0, 0) if brightness > 127 else (255, 255, 255)
+                
+                # Add padding to background rectangle
+                padding = max(2, int(font_size * 0.1))
+                draw.rectangle([min_x-padding, min_y-padding, max_x+padding, max_y+padding], fill=bg_color)
+                
+                # Center text in the box
+                text_x, text_y = self._center_text_in_box(
+                    draw, translated_text, font, min_x, min_y, box_width, box_height
+                )
+                
+                draw.text((text_x, text_y), translated_text, font=font, fill=text_color)
         
         return cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+    
+    def _calculate_font_size(self, text, box_width, box_height, min_size=8, max_size=72):
+        """
+        Calculate the optimal font size to fit text within the given box dimensions
+        """
+        # Start with a reasonable font size based on box height
+        font_size = max(min_size, int(box_height * 0.7))
+        font_size = min(font_size, max_size)
+        
+        # Try to load font and measure text
+        try:
+            font = ImageFont.truetype(self.font_path, font_size)
+        except:
+            font = ImageFont.load_default()
+            return min_size
+        
+        # Create a temporary draw object to measure text
+        temp_img = Image.new('RGB', (1, 1))
+        temp_draw = ImageDraw.Draw(temp_img)
+        
+        # Binary search for optimal font size
+        min_font = min_size
+        max_font = font_size
+        optimal_size = min_size
+        
+        for _ in range(10):  # Limit iterations
+            current_size = (min_font + max_font) // 2
+            
+            try:
+                test_font = ImageFont.truetype(self.font_path, current_size)
+            except:
+                break
+            
+            # Get text dimensions
+            bbox = temp_draw.textbbox((0, 0), text, font=test_font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            
+            # Check if text fits with some margin
+            margin_factor = 0.9  # Use 90% of available space
+            if (text_width <= box_width * margin_factor and 
+                text_height <= box_height * margin_factor):
+                optimal_size = current_size
+                min_font = current_size + 1
+            else:
+                max_font = current_size - 1
+            
+            if min_font > max_font:
+                break
+        
+        return max(min_size, optimal_size)
+    
+    def _center_text_in_box(self, draw, text, font, box_x, box_y, box_width, box_height):
+        """
+        Calculate the position to center text within a bounding box
+        """
+        # Get text dimensions
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        # Calculate centered position
+        text_x = box_x + (box_width - text_width) // 2
+        text_y = box_y + (box_height - text_height) // 2
+        
+        # Ensure text doesn't go outside the box
+        text_x = max(box_x, text_x)
+        text_y = max(box_y, text_y)
+        
+        return text_x, text_y
     
     def get_statistics(self):
         """
