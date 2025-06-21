@@ -6,11 +6,12 @@ class TranslationCache:
     def __init__(self):
         self.cache = {}
         self.translator = GoogleTranslator()
+        langs_dict = GoogleTranslator().get_supported_languages(as_dict=True)
+        support =  list(langs_dict.values())
         self.source = 'en'
         self.dest = 'fr'
-        self.supported_sources = ['en', 'fr', 'es', 'de']
-        self.supported_dest = ['en', 'fr', 'es', 'de']
-
+        self.supported_sources = support
+        self.supported_dest = support
     def set_source(self, source):
         if source in self.supported_sources:
             self.source = source

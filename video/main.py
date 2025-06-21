@@ -232,8 +232,8 @@ if __name__=="__main__":
     FastPipeline(
         video_path="test_video.mp4",
         output_path="output.mp4",
-        source_lang="en",
-        dest_lang="de",
+        source_lang="fr",
+        dest_lang="hi",
 
         # ——— speed/quality knobs tuned for Ryzen 9 7945HS + RTX 4050 ———
         difference_threshold=0.07,   # higher skips more
