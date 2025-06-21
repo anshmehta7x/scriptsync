@@ -27,6 +27,8 @@ from ocr import OCRFrame
 from translator import TranslationCache
 from frames import FrameProcessor
 
+from postprocess import compress_video_h265
+
 
 class FastPipeline:
     """Multithreaded video‑translation with minimal contention."""
@@ -212,6 +214,9 @@ class FastPipeline:
             out.release()
         gc.collect()
         for t in workers: t.join()
+        if self.encode:
+            compress_video_h265(self.output_path, self.output_path.replace(".mp4", "_compressed.mp4"))
+            os.remove(self.output_path)  # remove original uncompressed file
 
         # --- summary ----------------------------------------------------
         elapsed = time.time() - t0; proc, skip = self.stats['proc'], self.stats['skip']
@@ -225,16 +230,21 @@ class FastPipeline:
 # ── standalone run ─────────────────────────────────────────────────────────
 if __name__=="__main__":
     FastPipeline(
-        video_path="wealth.mp4",
-        output_path="output_wealth.mp4",
+        video_path="test_video.mp4",
+        output_path="output.mp4",
         source_lang="en",
-        dest_lang="fr",
+        dest_lang="de",
 
         # ——— speed/quality knobs tuned for Ryzen 9 7945HS + RTX 4050 ———
-        difference_threshold=0.08,   # skip until visibly different
-        max_consecutive_skips=1000,    # force a refresh every ~4 s at 30 fps
+        difference_threshold=0.07,   # higher skips more
+        max_consecutive_skips=500,    # force a refresh every ~4 s at 30 fps
+
+
+        # hardware limits
         max_workers=26,               # keeps 16 cores + SMT busy without thrashing
         gpu_concurrency_limit=4,      # saturates an RTX 4050 without overload
         queue_size=1200,               # ≈3.6 GB frame buffer fits comfortably in 32 GB
+
+        
     ).run()
 
