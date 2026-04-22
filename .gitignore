@@ -1,7 +1,6 @@
-video/__pycache__/translation.cpython-310.pyc
-
-*.mp4
+video/__pycache__/
+audio/__pycache__/
 video/temp_frames
-video/__pycache__
+__pycache__
 venv
-test_*
+.venv

@@ -23,11 +23,16 @@ from typing import Dict, Tuple, Optional
 
 import cv2, psutil, numpy as np
 
-from ocr import OCRFrame
-from translator import TranslationCache
-from frames import FrameProcessor
-
-from postprocess import compress_video_h265
+try:
+    from .ocr import OCRFrame
+    from .translator import TranslationCache
+    from .frames import FrameProcessor
+    from .postprocess import compress_video_h265
+except ImportError:
+    from ocr import OCRFrame
+    from translator import TranslationCache
+    from frames import FrameProcessor
+    from postprocess import compress_video_h265
 
 
 class FastPipeline:
@@ -47,12 +52,17 @@ class FastPipeline:
         queue_size: int = 600,
         log_every: float = 2.0,
         stall_timeout: float = 5.0,
+        frame_timeout: float = 8.0,
         encode: bool = True,  # switch off to profile pure processing
+        compress_output: bool = True,
+        shared_translation_cache: Dict[str, str] | None = None,
     ) -> None:
         self.video_path, self.output_path = video_path, output_path
         self.src, self.dst = source_lang, dest_lang
         self.diff_th, self.max_skips = difference_threshold, max_consecutive_skips
         self.log_every, self.stall_timeout, self.encode = log_every, stall_timeout, encode
+        self.frame_timeout = frame_timeout
+        self.compress_output = compress_output
 
         self.max_workers = max_workers or max(2, (os.cpu_count() or 4) - 1)
         self.gpu_sem = threading.Semaphore(gpu_concurrency_limit)
@@ -72,8 +82,9 @@ class FastPipeline:
         self.done_lock = threading.Lock()
 
         # Cache ----------------------------------------------------------
-        self.cache = TranslationCache(); self.cache.set_source(self.src); self.cache.set_dest(self.dst)
+        self.cache = TranslationCache(shared_cache=shared_translation_cache); self.cache.set_source(self.src); self.cache.set_dest(self.dst)
         self.cache_lock = threading.Lock()
+        self._inflight_translations: Dict[str, threading.Event] = {}
 
         # Stats ----------------------------------------------------------
         self.stats = dict(proc=0, skip=0, hit=0, miss=0, rss_max=0.0)
@@ -90,25 +101,59 @@ class FastPipeline:
     def _is_useful(txt: str) -> bool:
         return any(ch.isalnum() for ch in txt)
 
-    def _translate_cached(self, ocr: OCRFrame) -> Dict[str, str]:
-        todo, out = [], {}
-        with self.cache_lock:
-            for r in ocr.get_results():
-                raw = r.text.strip()
-                if not raw or not self._is_useful(raw):
-                    continue
+    def _translate_single(self, raw: str) -> str:
+        owner = False
+        wait_evt: Optional[threading.Event] = None
+
+        while True:
+            with self.cache_lock:
                 cached = self.cache.fuzzy_match_transaltions(raw)
                 if cached:
-                    out[raw] = cached or raw
-                    self.stats["hit"] += 1
-                else:
-                    todo.append(raw)
-        for raw in todo:
-            try:
-                out[raw] = self.cache.translate(raw) or raw
-            except Exception:
-                out[raw] = raw
-            self.stats["miss"] += 1
+                    with self.s_lock:
+                        self.stats["hit"] += 1
+                    return cached or raw
+
+                wait_evt = self._inflight_translations.get(raw)
+                if wait_evt is None:
+                    wait_evt = threading.Event()
+                    self._inflight_translations[raw] = wait_evt
+                    owner = True
+                    break
+
+            wait_evt.wait()
+
+        translated = raw
+        try:
+            translated = self.cache.translate(raw) or raw
+        except Exception:
+            translated = raw
+        finally:
+            with self.cache_lock:
+                evt = self._inflight_translations.pop(raw, None)
+                if evt is not None:
+                    evt.set()
+
+        if owner:
+            with self.s_lock:
+                self.stats["miss"] += 1
+
+        return translated
+
+    def _translate_cached(self, ocr: OCRFrame) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        unique_texts = set()
+
+        for r in ocr.get_results():
+            raw = r.text.strip()
+            if not raw or not self._is_useful(raw):
+                continue
+            if raw in unique_texts:
+                continue
+            unique_texts.add(raw)
+
+        for raw in unique_texts:
+            out[raw] = self._translate_single(raw)
+
         return out
 
     # ──────────────────────────────────────────────────────────────────── reader
@@ -142,11 +187,17 @@ class FastPipeline:
             idx, frame = self.todo.get()
             if idx == -1:
                 break
-            if not hasattr(self._tls, "proc"):
-                self._tls.proc = FrameProcessor(self.video_path, self.src, self.diff_th)
-            with self.gpu_sem:
-                ocr = OCRFrame(frame, self.src)
-                result = self._tls.proc.paste_frame(frame, ocr, self._translate_cached(ocr))
+            result = None
+            try:
+                if not hasattr(self._tls, "proc"):
+                    self._tls.proc = FrameProcessor(self.video_path, self.src, self.diff_th)
+                with self.gpu_sem:
+                    ocr = OCRFrame(frame, self.src)
+                translations = self._translate_cached(ocr)
+                result = self._tls.proc.paste_frame(frame, ocr, translations)
+            except Exception as exc:
+                result = None
+                print(f"⚠️ worker {wid} failed frame {idx}: {exc}")
             with self.done_lock:
                 self.done[idx] = result
             with self.s_lock:
@@ -194,8 +245,19 @@ class FastPipeline:
                 wait_since = time.time()
             else:
                 # Handle stall or busy spin
-                if (self.reader_done.is_set() and self.workers_done.is_set() and
-                        time.time() - wait_since > self.stall_timeout):
+                now = time.time()
+
+                # Hard timeout to avoid head-of-line blocking forever on a bad frame
+                if now - wait_since > self.frame_timeout:
+                    if self.encode:
+                        fallback = last_frame if last_frame is not None else np.zeros((self.h, self.w, 3), dtype=np.uint8)
+                        out.write(fallback)
+                    self.stats["skip"] += 1
+                    print(f"⚠️ frame {next_idx} timed out after {self.frame_timeout:.1f}s – skipped")
+                    next_idx += 1
+                    wait_since = now
+                elif (self.reader_done.is_set() and self.workers_done.is_set() and
+                        now - wait_since > self.stall_timeout):
                     if self.encode and last_frame is not None:
                         out.write(last_frame)
                     self.stats["skip"] += 1
@@ -214,13 +276,19 @@ class FastPipeline:
             out.release()
         gc.collect()
         for t in workers: t.join()
-        if self.encode:
+        if self.encode and self.compress_output:
             compress_video_h265(self.output_path, self.output_path.replace(".mp4", "_compressed.mp4"))
             os.remove(self.output_path)  # remove original uncompressed file
 
         # --- summary ----------------------------------------------------
         elapsed = time.time() - t0; proc, skip = self.stats['proc'], self.stats['skip']
-        print("\n✅ done →", self.output_path if self.encode else "(encode disabled)")
+        if self.encode and self.compress_output:
+            final_out = self.output_path.replace(".mp4", "_compressed.mp4")
+        elif self.encode:
+            final_out = self.output_path
+        else:
+            final_out = "(encode disabled)"
+        print("\n✅ done →", final_out)
         print(f"⏱ {elapsed:.2f}s | {(self.frames/elapsed):.1f} overall fps")
         print(f"🔤 OCR+translate frames: {proc} ({proc*100/self.frames:.1f}%) | skipped: {skip}")
         tot = self.stats['hit'] + self.stats['miss'] or 1
@@ -231,9 +299,9 @@ class FastPipeline:
 if __name__=="__main__":
     FastPipeline(
         video_path="test_video.mp4",
-        output_path="output.mp4",
-        source_lang="fr",
-        dest_lang="hi",
+        output_path="output.mp4",   
+        source_lang="en",
+        dest_lang="fr",
 
         # ——— speed/quality knobs tuned for Ryzen 9 7945HS + RTX 4050 ———
         difference_threshold=0.07,   # higher skips more

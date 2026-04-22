@@ -1,6 +1,7 @@
 import easyocr
 import cv2
 import numpy as np
+import threading
 from typing import Dict, List, Tuple, Any, Optional
 
 class OCRResult:
@@ -31,6 +32,8 @@ class OCRResult:
         }
 
 class OCRFrame:
+    _tls = threading.local()
+
     def __init__(self, frame, source_lang='en'):
         self.frame = frame
         self.source_lang = source_lang
@@ -39,8 +42,20 @@ class OCRFrame:
 
         self._process_ocr()
 
+    @classmethod
+    def _get_reader(cls, source_lang: str):
+        if not hasattr(cls._tls, "readers"):
+            cls._tls.readers = {}
+
+        readers = cls._tls.readers
+        reader = readers.get(source_lang)
+        if reader is None:
+            reader = easyocr.Reader([source_lang])
+            readers[source_lang] = reader
+        return reader
+
     def _process_ocr(self) -> None:
-        reader = easyocr.Reader([self.source_lang])
+        reader = self._get_reader(self.source_lang)
         detections = reader.readtext(self.frame)
 
         texts = []

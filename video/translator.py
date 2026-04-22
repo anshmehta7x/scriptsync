@@ -1,10 +1,11 @@
 from deep_translator import GoogleTranslator
 from thefuzz import fuzz
+from typing import Dict, Optional
 
 
 class TranslationCache:
-    def __init__(self):
-        self.cache = {}
+    def __init__(self, shared_cache: Optional[Dict[str, str]] = None):
+        self.cache = shared_cache if shared_cache is not None else {}
         self.translator = GoogleTranslator()
         langs_dict = GoogleTranslator().get_supported_languages(as_dict=True)
         support =  list(langs_dict.values())
@@ -39,6 +40,5 @@ class TranslationCache:
             return match
 
         translation = self.translator.translate(text, source=self.source, target=self.dest)
-        print(f"Translating '{text}' from {self.source} to {self.dest}: {translation}")
         self.cache[text] = translation
         return translation
